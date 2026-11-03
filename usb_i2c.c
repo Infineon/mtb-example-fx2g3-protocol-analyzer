@@ -158,7 +158,7 @@ cy_en_scb_i2c_status_t Cy_I2C_Read (uint16_t slaveAddress,uint16_t registerAddre
         mem_addr_buf[0] = (uint8_t)(registerAddress >> 8);
         mem_addr_buf[1] = (uint8_t)registerAddress;
     }
-        else
+    else
     {
         return CY_SCB_I2C_BAD_PARAM;
     }
@@ -186,7 +186,7 @@ cy_en_scb_i2c_status_t Cy_I2C_Write (uint16_t slaveAddress,uint16_t registerAddr
     int i = 0 , data_size = 0;
     cy_en_scb_i2c_status_t  status = CY_SCB_I2C_SUCCESS;
 
-    DBG_APP_INFO("Cy_USB_I2CWrite [Slave=0x%x, RegAddr=0x%x, Data=0x%x]\r\n", slaveAddress, registerAddress, data);
+    DBG_APP_INFO("I2C: Write [Slave=0x%x, RegAddr=0x%x, Data=0x%x]\r\n", slaveAddress, registerAddress, data);
 
     memset(scb0_i2c_buffer, 0, sizeof(scb0_i2c_buffer));
     if(2 == addressWidth) {
@@ -262,7 +262,7 @@ void ConfigureSCB0Clock(uint8_t scbIndex)
             break;
     }
 
-    DBG_APP_INFO("scbIndex %d hfClkFreq%d \n\r",0,hfClkFreq);
+    DBG_APP_INFO("I2C: SCB Index %d HF CLK %d \n\r",0,hfClkFreq);
 
     Cy_SysClk_PeriphEnableDivider (CY_SYSCLK_DIV_16_BIT, 3);
     Cy_SysLib_DelayUs (10);
@@ -334,8 +334,8 @@ void Cy_USB_I2CInit (void)
     dataClock = Cy_SysClk_PeriphGetFrequency(CY_SYSCLK_DIV_16_BIT, 3);
     dataRate = Cy_SCB_I2C_SetDataRate(SCB0, I2C_DATARATE, I2C_INCLK_TARGET_FREQ);
     /* Register interrupt handler for SCB-I2C. */
-    DBG_APP_INFO("I2C dataClock: %d\r\n", dataClock);
-    DBG_APP_INFO("I2C dataRate: %d\r\n", dataRate);
+    DBG_APP_INFO("I2C: Data Clock %d\r\n", dataClock);
+    DBG_APP_INFO("I2C: Data Rate %d\r\n", dataRate);
     if ((dataRate > I2C_DATARATE) || (dataRate == 0U))
     {
         /* Can not reach desired data rate */

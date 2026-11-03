@@ -5,7 +5,7 @@
 * \details  This is the source code for the USB Protocol Analyzer Code Example
 *           for ModusToolbox.
 *
-*           See \ref README.md ["README.md"]
+* See \ref README.md ["README.md"]
 *
 *
 *******************************************************************************
@@ -45,7 +45,6 @@
 #include "timers.h"
 #include "usb_i2c.h"
 #include "gpif_header.h"
-
 
 /* Select SCB interface used for UART based logging. */
 #define LOGGING_SCB             (SCB4)
@@ -106,6 +105,10 @@ extern void xPortPendSVHandler(void);
 extern void xPortSysTickHandler(void);
 extern void vPortSVCHandler(void);
 
+/**
+ * \name vPortSetupTimerInterrupt
+ * \retval None
+ */
 void vPortSetupTimerInterrupt(void)
 {
     /* Register the exception vectors. */
@@ -115,7 +118,13 @@ void vPortSetupTimerInterrupt(void)
 
     /* Start the SysTick timer with a period of 1 ms. */
     Cy_SysTick_SetClockSource(CY_SYSTICK_CLOCK_SOURCE_CLK_CPU);
+
+#if CY_CPU_CORTEX_M4
     Cy_SysTick_SetReload(Cy_SysClk_ClkFastGetFrequency() / 1000U);
+#else
+    Cy_SysTick_SetReload(Cy_SysClk_ClkSlowGetFrequency() / 1000U);
+#endif /* CY_CPU_CORTEX_M4 */
+
     Cy_SysTick_Clear();
     Cy_SysTick_Enable();
 }
@@ -135,16 +144,11 @@ void PrintTaskHandler(void *pTaskParam)
 #endif /* DEBUG_INFRA_EN */
 
 /**
- * \name Cy_PA_GpifIntr(void *pApp)
- *****************************************************************************
- * Description: GPIF Interrupt Handler
- * 
- * \param pApp
- * app context
- *
- * Return:
- *  void
- ****************************************************************************/
+ * \name Cy_PA_GpifIntr
+ * \brief GPIF Interrupt Handler
+ * \param pApp app context
+ * \retval None
+ */
 void
 Cy_PA_GpifIntr(void *pApp)
 {
@@ -152,17 +156,15 @@ Cy_PA_GpifIntr(void *pApp)
     pAppCtxt = (cy_stc_usb_app_ctxt_t*)pApp;
 
     /* Reset the DMA channel through which data is received from the LVDS side. */
-                    
-    Cy_HBDma_Channel_Reset(pAppCtxt->hbBulkInChannel[0]);
-
-    Cy_USBHS_App_ResetEpDma(&(pAppCtxt->endpInDma[pAppCtxt->paInEpNum1]));
-    /* Flush and reset the endpoint and clear the STALL bit. */
-    Cy_USBD_FlushEndp(pAppCtxt->pUsbdCtxt, pAppCtxt->paInEpNum1, CY_USB_ENDP_DIR_IN);
-    Cy_USBD_ResetEndp(pAppCtxt->pUsbdCtxt, pAppCtxt->paInEpNum1, CY_USB_ENDP_DIR_IN, false);
-    Cy_USB_USBD_EndpSetClearStall(pAppCtxt->pUsbdCtxt, pAppCtxt->paInEpNum1, CY_USB_ENDP_DIR_IN, false);
-    pAppCtxt->paPendingRxBufCnt1 = 0;
-
-    Cy_USBD_SendAckSetupDataStatusStage(pAppCtxt->pUsbdCtxt);
+    if(pAppCtxt->hbBulkInChannel != NULL ) 
+    {            
+	    Cy_HBDma_Channel_Reset(pAppCtxt->hbBulkInChannel);
+	
+	    /* Flush and reset the endpoint and clear the STALL bit. */
+	    Cy_USBD_FlushEndp(pAppCtxt->pUsbdCtxt, pAppCtxt->paInEpNum, CY_USB_ENDP_DIR_IN);
+	    Cy_USBD_ResetEndp(pAppCtxt->pUsbdCtxt, pAppCtxt->paInEpNum, CY_USB_ENDP_DIR_IN, false);
+	    Cy_USB_USBD_EndpSetClearStall(pAppCtxt->pUsbdCtxt, pAppCtxt->paInEpNum, CY_USB_ENDP_DIR_IN, false);
+    }
 
     return;
 }
@@ -354,8 +356,10 @@ void Cy_PA_LvdsInit(void)
 
     Cy_LVDS_RegisterCallback(LVDSSS_LVDS, &cb, &lvdsContext, &appCtxt);
     
+#if CLKOUT_ENABLE
     /*Enable Clock Out*/
     Cy_LVDS_ClkOutEnable(LVDSSS_LVDS,CY_LVDS_PHY_INTERFACE_CLK_OUT_48_MHZ);
+#endif /* CLKOUT_ENABLE */
 
     Cy_LVDS_Enable(LVDSSS_LVDS);
     DBG_APP_INFO("LVCMOS Enabled\r\n");
@@ -369,6 +373,7 @@ void Cy_PA_LvdsInit(void)
  * \brief Handler for LVDS Interrupts.
  * \retval None
  */
+
 void Cy_LVDS_ISR(void)
 {
     Cy_LVDS_IrqHandler(LVDSSS_LVDS, &lvdsContext);
@@ -401,37 +406,14 @@ void Cy_USB_HS_ISR(void)
 }
 
 /**
- * \name Cy_PA_RxDataWireCombined_ISR(void)
- * \brief Datawire combined ISR for CM0+
- * \retval None
- */
-#if !CY_CPU_CORTEX_M4
-void Cy_PA_RxDataWireCombined_ISR (void)
-{
-    uint32_t chnId;
-    for (chnId = 1; chnId < 16; chnId++) {
-        if (Cy_DMA_Channel_GetInterruptStatus(DW1, chnId) != 0) {
-            if(chnId == BULK_IN_ENDPOINT_1)
-            {
-                Cy_PA_RxChannel1DataWire_ISR();
-            }
-        }
-    } 
-}
-#endif
-
-/**
- * \name Cy_PA_RxChannel1DataWire_ISR(void)
+ * \name Cy_PA_RxChannelDataWire_ISR(void)
  * \brief Datawire ISR for Protocol Analyzer RX for channel#1 
  * \retval None
  */
-void Cy_PA_RxChannel1DataWire_ISR (void)
+void Cy_PA_RxChannelDataWire_ISR (void)
 {
-    /* Clear the interrupt first. */
-    Cy_USB_AppClearDmaInterrupt(&appCtxt, BULK_IN_ENDPOINT_1, CY_USB_ENDP_DIR_IN);
-
-    /* The current data buffer has been consumed. Move to another buffer if available. */
-    Cy_PA_AppHandleRxCompletion(&appCtxt, 1);
+    Cy_HBDma_Mgr_HandleDW1Interrupt(appCtxt.pHbDmaMgrCtxt);
+    portYIELD_FROM_ISR(true);
 }
 
 /**
@@ -439,6 +421,7 @@ void Cy_PA_RxChannel1DataWire_ISR (void)
  * \brief Function used to enable clocks to different peripherals on the FX2G3 device.
  * \param adcClkEnable Whether to enable clock to the ADC in the USBSS block.
  * \param usbfsClkEnable Whether to enable bus reset detect clock input to the USBFS block.
+ * \retval None
  */
 void Cy_Fx2g3_InitPeripheralClocks (
         bool adcClkEnable,
@@ -463,13 +446,12 @@ void Cy_Fx2g3_InitPeripheralClocks (
 
 /**
  * \name Cy_Fx2g3_OnResetInit
- * \details
- * This function performs initialization that is required to enable scatter
- * loading of data into the High BandWidth RAM during device boot-up. The FX2G3
- * device comes up with the High BandWidth RAM disabled and hence any attempt
- * to read/write the RAM will cause the processor to hang. The RAM needs to
- * be enabled with default clock settings to allow scatter loading to work.
- * This function needs to be called from Cy_OnResetUser.
+ * \details This function performs initialization that is required to enable scatter
+ *          loading of data into the High BandWidth RAM during device boot-up. The FX2G3
+ *          device comes up with the High BandWidth RAM disabled and hence any attempt
+ *          to read/write the RAM will cause the processor to hang. The RAM needs to
+ *          be enabled with default clock settings to allow scatter loading to work.
+ *          This function needs to be called from Cy_OnResetUser.
  * \retval None
  */
 void
@@ -526,6 +508,7 @@ void Cy_PrintVersionInfo(const char *type, uint32_t version)
 
     Cy_Debug_AddToLog(1,"%s", tString);
 }
+
 #if USB_SNIFFER 
 /**
  * \name Cy_JTAGInit
@@ -561,6 +544,7 @@ void Cy_JTAGInit(uint16_t wValue) {
 void Cy_LatticeFPGAInit(void) {
     cy_stc_gpio_pin_config_t pinCfg;
 
+    memset((void *)&pinCfg, 0, sizeof(pinCfg));
     pinCfg.driveMode = CY_GPIO_DM_STRONG_IN_OFF;
     pinCfg.hsiom     = P13_0_GPIO;
     Cy_GPIO_Pin_Init(USB_SNIFFER_JTAG_ENABLE_PORT, USB_SNIFFER_JTAG_ENABLE_PIN, &pinCfg);
@@ -568,14 +552,16 @@ void Cy_LatticeFPGAInit(void) {
 }
 
 /**
- * \name Cy_BitBangI2CInit
+ * \name Cy_GPIO_I2CInit
  * \brief Initialize the IO for the I2C
  * \retval void
  */
 
-void Cy_BitBangI2CInit(void) {
+void Cy_GPIO_I2CInit(void)
+{
     cy_stc_gpio_pin_config_t pinCfg;
 
+    memset((void *)&pinCfg, 0, sizeof(pinCfg));
     pinCfg.driveMode = CY_GPIO_DM_STRONG_IN_OFF;
     pinCfg.hsiom     = P4_4_GPIO;
     Cy_GPIO_Pin_Init(USB_SNIFFER_I2C_PORT, USB_SNIFFER_I2C_SCL_PIN, &pinCfg);
@@ -593,7 +579,7 @@ void Cy_BitBangI2CInit(void) {
     Cy_GPIO_WriteSetClear(USB_SNIFFER_I2C_PORT, USB_SNIFFER_I2C_SDA_PIN, 0x01);
     
 }
-#endif
+#endif /* USB_SNIFFER */
 
 /**
  * \name Cy_USB_VbusDetGpio_ISR
@@ -756,6 +742,9 @@ bool Cy_PA_HbDmaInit(void)
     {
         return false;
     }
+    
+   /* Register the USB stack context with the HBW DMA manager. */
+    Cy_HBDma_Mgr_RegisterUsbContext(&HBW_MgrCtxt, &usbdCtxt);
 
     return true;
 }
@@ -769,7 +758,7 @@ bool Cy_PA_HbDmaInit(void)
 void Cy_USB_DisableUsbBlock (void)
 {
     Cy_HBDma_DeInit(&HBW_DrvCtxt);
-    DBG_APP_INFO("USB DISABLE\r\n");
+    DBG_APP_INFO("USB: Disabled HBWSS DMA adapters\r\n");
 }
 
 /**
@@ -793,7 +782,7 @@ void Cy_USB_EnableUsbBlock (void)
 bool Cy_USB_EnableUsbHSConnection (cy_stc_usb_app_ctxt_t *pAppCtxt)
 {
 
-    DBG_APP_INFO("USB_DEV_HS\r\n");
+    DBG_APP_INFO("USB: Enable connection\r\n");
     Cy_USBD_ConnectDevice(pAppCtxt->pUsbdCtxt, CY_USBD_USB_DEV_HS);
     pAppCtxt->usbConnected = true;
     return true;
@@ -839,6 +828,10 @@ int main(void)
     InitUart(LOGGING_SCB_IDX);
 #endif /* USBFS_LOGS_ENABLE */
 
+    /*
+     * Initialize the logger module. We are using a blocking print option which will
+     * output the messages immediately without buffering.
+     */
     Cy_Debug_LogInit(&dbgCfg);
 
     /* Create task for printing logs and check status. */
@@ -857,10 +850,10 @@ int main(void)
 #if USB_SNIFFER 
     /* Initialize I2C SCB*/
     Cy_USB_I2CInit ();
-    Cy_BitBangI2CInit();
+    Cy_GPIO_I2CInit();
     Cy_LatticeFPGAInit();
     Cy_JTAGInit(0); //Disable JTAG on Power-up
-#endif
+#endif /* USB_SNIFFER */
 
     memset((uint8_t *)&appCtxt, 0, sizeof(appCtxt));
     memset((uint8_t *)&hsCalCtxt, 0, sizeof(hsCalCtxt));
@@ -880,7 +873,6 @@ int main(void)
     Cy_USB_USBD_Init(&appCtxt, &usbdCtxt, pCpuDmacBase, &hsCalCtxt,NULL, &HBW_MgrCtxt);
     DBG_APP_INFO("USBD_Init done\r\n");
 
-    Cy_USBD_SetDmaClkFreq(&usbdCtxt, CY_HBDMA_CLK_240_MHZ);
 
     /* Enable stall cycles between back-to-back AHB accesses to high bandwidth RAM. */
     MAIN_REG->CTRL = (MAIN_REG->CTRL & 0xF00FFFFFUL) | 0x09900000UL;
@@ -913,8 +905,7 @@ int main(void)
 
 /**
  * \name Cy_OnResetUser
- * \brief   Init function which is executed before the load regions in RAM
- *          are updated.
+ * \brief Init function which is executed before the load regions in RAM are updated.
  * \details
  * The High BandWidth subsystem needs to be enable here to allow variables
  * placed in the High BandWidth SRAM to be updated.

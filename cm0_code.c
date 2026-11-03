@@ -37,10 +37,9 @@ __attribute__ ((section(".cy_app_signature"), used)) const uint8_t cyFx2g3AppSig
 #if defined (__ARMCC_VERSION)
 /**
  * \name Cy_AppVerify_MemorySymbols
- * \details
- * The intention of the function is to declare boundaries of the memories for the
- * MDK compilers. For the rest of the supported compilers, this is done using
- * linker configuration files. The following symbols used by the cymcuelftool.
+ * \details The intention of the function is to declare boundaries of the memories for the
+ *          MDK compilers. For the rest of the supported compilers, this is done using
+ *          linker configuration files. The following symbols used by the cymcuelftool.
  * \retval None
  */
 void Cy_AppVerify_MemorySymbols (void)

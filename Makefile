@@ -140,7 +140,8 @@ DEFINES= \
         USBFS_LOGS_ENABLE=0 \
         BUS_WIDTH_16=1 \
         USB_SNIFFER=1 \
-        USB_SNIFFER_VID_PID=1
+        USB_SNIFFER_VID_PID=1 \
+        CLKOUT_ENABLE=0
 
 # Append product definition
 DEFINES += $(subst -,_,$(DEVICE))=1

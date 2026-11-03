@@ -40,7 +40,7 @@
 #include "cy_lvds.h"
 #include "usb_i2c.h"
 
-uint8_t __attribute__ ((section(".descSection"), used)) __attribute__ ((aligned (32))) Ep0TestBuffer[4096U];
+uint8_t __attribute__ ((section(".descSection"), used)) __attribute__ ((aligned (32))) Ep0XferBuffer[4096U];
 
 /**
  * \name Cy_GPIO_WriteSetClear
@@ -56,15 +56,14 @@ void Cy_GPIO_WriteSetClear(GPIO_PRT_Type* base, uint32_t pinNum, uint32_t value)
     else
         GPIO_PRT_OUT_CLR(base) = (CY_GPIO_OUT_MASK<<pinNum);
 }
-/* SCL low delay */
-#define SCLLOW  60
+
 /**
- * \name Cy_I2CWriteBit
+ * \name Cy_GPIO_I2C_WriteBit
  * \brief Write a bit value on the i2c bus
  * \param bit
  * \retval void
  */
-void Cy_I2CWriteBit(uint32_t bit)
+static void Cy_GPIO_I2C_WriteBit(uint32_t bit)
 {
     Cy_GPIO_WriteSetClear(USB_SNIFFER_I2C_PORT, USB_SNIFFER_I2C_SCL_PIN, 0);
     Cy_GPIO_WriteSetClear(USB_SNIFFER_I2C_PORT, USB_SNIFFER_I2C_SDA_PIN, bit);
@@ -73,27 +72,27 @@ void Cy_I2CWriteBit(uint32_t bit)
 }
 
 /**
- * \name Cy_usb_sniffer_i2c_send
+ * \name Cy_USB_Sniffer_I2C_Write
  * \brief Write the 5bit value i2c data.
  * \param wValue value
  * \retval success or failure
  */
-cy_en_scb_i2c_status_t Cy_usb_sniffer_i2c_send(uint8_t wValue)
+static cy_en_scb_i2c_status_t Cy_USB_Sniffer_I2C_Write(uint8_t wValue)
 {
 
-    wValueData_t I2CData;
+    cy_stc_data_t I2CData;
+    cy_en_scb_i2c_status_t status = CY_SCB_I2C_SUCCESS;
 
     I2CData.Value = wValue;
-    cy_en_scb_i2c_status_t status = CY_SCB_I2C_SUCCESS;
 
     //Start condition: clk high, dat must go low
     Cy_GPIO_WriteSetClear(USB_SNIFFER_I2C_PORT, USB_SNIFFER_I2C_SDA_PIN, 0);
     
-    Cy_I2CWriteBit(I2CData.bits.b0);
-    Cy_I2CWriteBit(I2CData.bits.b1);
-    Cy_I2CWriteBit(I2CData.bits.b2);
-    Cy_I2CWriteBit(I2CData.bits.b3);
-    Cy_I2CWriteBit(I2CData.bits.b4);
+    Cy_GPIO_I2C_WriteBit(I2CData.bits.b0);
+    Cy_GPIO_I2C_WriteBit(I2CData.bits.b1);
+    Cy_GPIO_I2C_WriteBit(I2CData.bits.b2);
+    Cy_GPIO_I2C_WriteBit(I2CData.bits.b3);
+    Cy_GPIO_I2C_WriteBit(I2CData.bits.b4);
 
     /* Stop state */
     Cy_GPIO_WriteSetClear(USB_SNIFFER_I2C_PORT, USB_SNIFFER_I2C_SDA_PIN, 0x00);
@@ -103,93 +102,218 @@ cy_en_scb_i2c_status_t Cy_usb_sniffer_i2c_send(uint8_t wValue)
     return status;
 }
 
+static void Cy_JTAGTransfer(uint8_t count)
+{
+    uint8_t full = count >> 2;
+    uint8_t i;
+    cy_stc_data_t B;
+    uint32_t intMask;
+    intMask = Cy_SysLib_EnterCriticalSection();
+
+    for (i = 0; i < full; i++)
+    {
+        /* Reference code do not delete:
+           B = EP0BUF[i];
+           JTAG_TMS = B_0_b;
+           JTAG_TDI = B_1_b;
+           JTAG_TCK = 1;
+           B_0_b = JTAG_TDO;
+           JTAG_TCK = 0;
+         */
+        B.Value = Ep0XferBuffer[i];
+        (B.bits.b0) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
+
+        (B.bits.b1) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
+
+        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+        B.bits.b0  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
+        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+
+        /*
+           JTAG_TMS = B_2_b;
+           JTAG_TDI = B_3_b;
+           JTAG_TCK = 1;
+           B_1_b = JTAG_TDO;
+           JTAG_TCK = 0;
+         */
+        (B.bits.b2) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
+
+        (B.bits.b3) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
+
+        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+        B.bits.b1  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
+        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+
+        /*
+           JTAG_TMS = B_4_b;
+           JTAG_TDI = B_5_b;
+           JTAG_TCK = 1;
+           B_2_b = JTAG_TDO;
+           JTAG_TCK = 0;
+         */
+        (B.bits.b4) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
+
+        (B.bits.b5) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
+
+        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+        B.bits.b2  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
+        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+
+        /*
+           JTAG_TMS = B_6_b;
+           JTAG_TDI = B_7_b;
+           JTAG_TCK = 1;
+           B_3_b = JTAG_TDO;
+           JTAG_TCK = 0;
+         */
+        (B.bits.b6) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
+
+        (B.bits.b7) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
+
+        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+        B.bits.b3  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
+        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+
+        Ep0XferBuffer[i] = (uint8_t) B.Value;
+    }
+
+    if (count & 3)
+    {
+        /*
+           B = EP0BUF[full];
+           JTAG_TMS = B_0_b;
+           JTAG_TDI = B_1_b;
+           JTAG_TCK = 1;
+           B_0_b = JTAG_TDO;
+           B_1_b = 0;
+           JTAG_TCK = 0;
+         */
+        B.Value = Ep0XferBuffer[full];
+        (B.bits.b0) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
+
+        (B.bits.b1) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
+
+        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+        B.bits.b0  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
+        B.bits.b1 = 0;
+        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+
+        if (count & 2)
+        {
+            /*
+               JTAG_TMS = B_2_b;
+               JTAG_TDI = B_3_b;
+               JTAG_TCK = 1;
+               B_1_b = JTAG_TDO;
+               B_2_b = 0;
+               JTAG_TCK = 0;
+             */
+            (B.bits.b2) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
+                Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
+
+            (B.bits.b3) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
+                Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
+
+            Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+            B.bits.b1  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
+            B.bits.b2 = 0;
+            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+            if (count & 1)
+            {
+                /*
+                   JTAG_TMS = B_4_b;
+                   JTAG_TDI = B_5_b;
+                   JTAG_TCK = 1;
+                   B_2_b = JTAG_TDO;
+                   JTAG_TCK = 0;
+                 */
+                (B.bits.b4) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
+                    Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
+
+                (B.bits.b5) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
+                    Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
+
+                Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+                B.bits.b2  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
+                Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
+            }
+        }
+        else
+        {
+            /*
+               B_2_b = 0;
+             */
+            B.bits.b2 = 0;
+        }
+
+        /*
+           B_3_b = 0;
+         */
+        B.bits.b3 = 0;
+        Ep0XferBuffer[full] = (uint8_t) B.Value;
+    }
+
+    Cy_SysLib_ExitCriticalSection(intMask);
+}
+
 /**
  * \name Cy_PA_AppStop
  * \brief Stop the data stream channels
  * \param pAppCtxt application layer context pointer
  * \param pUsbdCtxt USBD layer context pointer
  * \param IsStreamStart Pass 1 to start streaming from fpga elase 0
- * \retval void
+ * \retval None
  */
 static void Cy_PA_AppStop(cy_stc_usb_app_ctxt_t *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt, uint32_t epNumber)
 {
     cy_en_hbdma_mgr_status_t status = CY_HBDMA_MGR_SUCCESS;
     uint8_t index = 0;
     cy_stc_hbdma_sock_t sckStat;
+    uint32_t pollCnt = 0;
 
-    DBG_APP_INFO("App Stop:epNumber=0x%x\r\n",epNumber);
+    DBG_APP_INFO("PA: Stream Stop on ep =0x%x\r\n", epNumber);
 
     if (BULK_IN_ENDPOINT_1 == epNumber)
     {
-        for(index = 0; index < pAppCtxt->hbBulkInChannel[0]->prodSckCount; index++)
+        /* Wait for DMA sockets to stall */
+        for(index = 0; index < pAppCtxt->hbBulkInChannel->prodSckCount; index++)
         {
             do {
-                Cy_HBDma_GetSocketStatus(pAppCtxt->pHbDmaMgrCtxt->pDrvContext, pAppCtxt->hbBulkInChannel[0]->prodSckId[index], &sckStat);
-            } while(((_FLD2VAL(LVDSSS_LVDS_ADAPTER_DMA_SCK_STATUS_STATE,sckStat.status)) != 0x1));
+                Cy_SysLib_DelayUs(10);
+                Cy_HBDma_GetSocketStatus(pAppCtxt->pHbDmaMgrCtxt->pDrvContext, pAppCtxt->hbBulkInChannel->prodSckId[index], &sckStat);
+            } while(
+                    ((_FLD2VAL(LVDSSS_LVDS_ADAPTER_DMA_SCK_STATUS_STATE,sckStat.status)) != 0x1) &&
+                    (pollCnt++ < 500)
+                   );
 
-            DBG_APP_INFO("DMA Socket %x is stalled\r\n", pAppCtxt->hbBulkInChannel[0]->prodSckId[index]);
+            DBG_APP_INFO("PA: DMA Socket %x is stalled (%x)\r\n", pAppCtxt->hbBulkInChannel->prodSckId[index],
+                    sckStat.status);
         }
         /* Reset the DMA channel through which data is received from the LVDS side. */
-        status = Cy_HBDma_Channel_Reset(pAppCtxt->hbBulkInChannel[0]);
+        status = Cy_HBDma_Channel_Reset(pAppCtxt->hbBulkInChannel);
         ASSERT_NON_BLOCK(CY_HBDMA_MGR_SUCCESS == status,status);
-        pAppCtxt->paPendingRxBufCnt1 = 0;
-        DBG_APP_INFO("EP: %d DMA Reset and App Stopped\n",epNumber);
-
     }
-
-    /* On USB 2.0 connection, reset the DataWire channel used to send data to the EPM. */
-    Cy_USBHS_App_ResetEpDma(&(pAppCtxt->endpInDma[epNumber]));
 
     /* Flush and reset the endpoint and clear the STALL bit. */
     Cy_USBD_FlushEndp(pUsbdCtxt, epNumber, CY_USB_ENDP_DIR_IN);
     Cy_USBD_ResetEndp(pUsbdCtxt, epNumber, CY_USB_ENDP_DIR_IN, false);
     Cy_USB_USBD_EndpSetClearStall(pUsbdCtxt, (cy_en_usb_endp_dir_t)epNumber, CY_USB_ENDP_DIR_IN, false);
 
-    DBG_APP_INFO("Cy_HBDma_Channel_Enable = %d\n",
-            Cy_HBDma_Channel_Enable(pAppCtxt->hbBulkInChannel[0], 0));
+
+    status = Cy_HBDma_Channel_Enable(pAppCtxt->hbBulkInChannel, 0);
+    ASSERT_NON_BLOCK(CY_HBDMA_MGR_SUCCESS == status,status);
 }
 
-/**
- * \name Cy_PA_AppHandleRxEvent
- * \brief Function to handle data received on Protocol Analyzer interface
- * \param pUsbApp application layer context pointer
- * \param pChHandle HBDMA channel handler
- * \param incFlag flag to queue data on USB
- * \param index Protocol Analyzer channel index
- * \retval void
- */
-static void Cy_PA_AppHandleRxEvent (cy_stc_usb_app_ctxt_t  *pUsbApp, cy_stc_hbdma_channel_t *pChHandle, bool incFlag, uint8_t index)
-{
-    cy_en_hbdma_mgr_status_t   status;
-    cy_stc_hbdma_buff_status_t buffStat;
-    uint32_t intMask;
-
-    if(index == 1)
-    {
-        /* Queue USBHS IN transfer */
-        if(incFlag == 1)
-        {
-            intMask = Cy_SysLib_EnterCriticalSection();
-            pUsbApp->paPendingRxBufCnt1++;
-            if(pUsbApp->paPendingRxBufCnt1 > 1)
-            {
-                Cy_SysLib_ExitCriticalSection(intMask);
-                return;
-            }
-            Cy_SysLib_ExitCriticalSection(intMask);
-        }
-
-          /* Wait for a free buffer. */
-          status = Cy_HBDma_Channel_GetBuffer(pChHandle, &buffStat);
-          if (status != CY_HBDMA_MGR_SUCCESS)
-          {
-              DBG_APP_ERR("SOC_ERROR\r\n");
-              return;
-          }
-
-          Cy_USB_AppQueueWrite(pUsbApp, pUsbApp->paInEpNum1, buffStat.pBuffer, buffStat.count);
-    }
-}
 
 /**
  * \name Cy_PA_AppHbDmaRxCallback
@@ -198,7 +322,7 @@ static void Cy_PA_AppHandleRxEvent (cy_stc_usb_app_ctxt_t  *pUsbApp, cy_stc_hbdm
  * \param cy_en_hbdma_cb_type_t HBDMA channel type
  * \param pbufStat HBDMA buffer status
  * \param userCtx user context
- * \retval void
+ * \retval None
  */
 void Cy_PA_AppHbDmaRxCallback(
         cy_stc_hbdma_channel_t *handle,
@@ -206,17 +330,26 @@ void Cy_PA_AppHbDmaRxCallback(
         cy_stc_hbdma_buff_status_t *pbufStat,
         void *userCtx)
 {
-    cy_stc_usb_app_ctxt_t *pAppCtxt = (cy_stc_usb_app_ctxt_t *)userCtx;
-    uint8_t index = 0;
-
-    if(handle == pAppCtxt->hbBulkInChannel[0])
-    {
-        index = 1;
-    }
+    cy_en_hbdma_mgr_status_t   status;
+    cy_stc_hbdma_buff_status_t buffStat;
 
     if (type == CY_HBDMA_CB_PROD_EVENT)
     {
-        Cy_PA_AppHandleRxEvent(pAppCtxt, handle,1,index);
+	    /* Ensure that we have a full data buffer. */
+	    status = Cy_HBDma_Channel_GetBuffer(handle, &buffStat);
+	    if (status != CY_HBDMA_MGR_SUCCESS)
+	    {
+	        DBG_APP_ERR("PA: Get Buffer Failed %x\r\n", status);
+	        return;
+	    }
+        
+        /* We need to commit the data. */
+        status = Cy_HBDma_Channel_CommitBuffer(handle, &buffStat);
+        if (status != CY_HBDMA_MGR_SUCCESS)
+      	{
+          DBG_APP_ERR("PA: Commit Buffer Failed %x\r\n", status);
+          return;
+      	}
     }
 }
 
@@ -224,7 +357,7 @@ void Cy_PA_AppHbDmaRxCallback(
  * \name Cy_PA_AppTaskHandler
  * \brief Protocol Analyzer Application task handler
  * \param pTaskParam task param
- * \retval void
+ * \retval None
  */
 void Cy_PA_AppTaskHandler(void *pTaskParam)
 {
@@ -234,7 +367,7 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
     uint32_t lpEntryTime = 0;
     uint8_t i ;
     uint32_t loopCnt = 0, printCnt = 0;
-    static bool Powerup = true;
+    static bool powerUp = true;
 
     vTaskDelay(250);
 
@@ -243,16 +376,10 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
     vTaskDelay(100);
 
     /* If VBus is present, enable the USB connection. */
-    pAppCtxt->vbusPresent =
-    (Cy_GPIO_Read(VBUS_DETECT_GPIO_PORT, VBUS_DETECT_GPIO_PIN) == VBUS_DETECT_STATE);
-#if USBFS_LOGS_ENABLE
-    vTaskDelay(500);
-#endif /* USBFS_LOGS_ENABLE */
+    pAppCtxt->vbusPresent = (Cy_GPIO_Read(VBUS_DETECT_GPIO_PORT, VBUS_DETECT_GPIO_PIN) == VBUS_DETECT_STATE);
     if (pAppCtxt->vbusPresent) {
         Cy_USB_EnableUsbHSConnection(pAppCtxt);
     }
-
-    DBG_APP_INFO("AppThreadCreated\r\n");
 
     for (;;)
     {
@@ -273,7 +400,6 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
         loopCnt++;
         if (loopCnt > 50) {
             DBG_APP_INFO("TASKLOOP: %d\r\n", printCnt++);
-            DBG_APP_INFO("Cy_LVDS_GpifGetSMState = %x\r\n", Cy_LVDS_GpifGetSMState(LVDSSS_LVDS, 0));
             loopCnt = 0;
         }
         /*
@@ -298,7 +424,7 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
 
                 if (pAppCtxt->vbusPresent) {
                     if (!pAppCtxt->usbConnected) {
-                        DBG_APP_INFO("Enabling USB connection due to VBus detect\r\n");
+                        DBG_APP_INFO("PA: Enabling USB connection due to VBus detect\r\n");
                         Cy_USB_EnableUsbHSConnection(pAppCtxt);
                     }
                 } else {
@@ -319,13 +445,12 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
 
                         if (pAppCtxt->hbChannelCreated)
                         {
-                            DBG_APP_TRACE("HBDMA destroy\r\n");
                             pAppCtxt->hbChannelCreated = false;
-                            Cy_HBDma_Channel_Disable(pAppCtxt->hbBulkInChannel[0]);
-                            Cy_HBDma_Channel_Destroy(pAppCtxt->hbBulkInChannel[0]);
+                            Cy_HBDma_Channel_Disable(pAppCtxt->hbBulkInChannel);
+                            Cy_HBDma_Channel_Destroy(pAppCtxt->hbBulkInChannel);
                         }
                     }
-                    DBG_APP_INFO("Disabling USB connection due to VBus removal\r\n");
+                    DBG_APP_INFO("PA: Disabling USB connection due to VBus removal\r\n");
                     Cy_USB_DisableUsbHSConnection(pAppCtxt);
                 }
                 
@@ -333,22 +458,21 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
 
             case CAPTURE_CTRL_TEST:
                 /* Reset DMA before start of capture */
-                if (((uint8_t)(queueMsg.data[0]) == BULK_IN_ENDPOINT_1) && (!Powerup))
+                if (((uint8_t)(queueMsg.data[0]) == BULK_IN_ENDPOINT_1) && (!powerUp))
                 {
                     Cy_PA_AppStop(pAppCtxt, pAppCtxt->pUsbdCtxt, BULK_IN_ENDPOINT_1);
                 }
-                if (Powerup == true) {
-                    Powerup = false;
-                }
+                powerUp = false;
                 /* no break */
+
             case CAPTURE_CTRL_RESET:
             case CAPTURE_CTRL_ENABLE:
             case CAPTURE_CTRL_SPEED0:
             case CAPTURE_CTRL_SPEED1:
-                DBG_APP_INFO("CY USB SNIFFER for EP %x wValue 0x%x\r\n", (uint8_t)queueMsg.data[0],(uint8_t)queueMsg.data[1]);
+                DBG_APP_TRACE("PA:EP %x wValue 0x%x\r\n", (uint8_t)queueMsg.data[0],(uint8_t)queueMsg.data[1]);
                 if((uint8_t)(queueMsg.data[0]) == BULK_IN_ENDPOINT_1)
                 {
-                    Cy_usb_sniffer_i2c_send(queueMsg.data[1]);
+                    Cy_USB_Sniffer_I2C_Write(queueMsg.data[1]);
                 }
                 break;  
             case CMD_JTAG_REQUEST:
@@ -358,7 +482,7 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
                     uint16_t length = queueMsg.data[1] & 0xFF;
                     uint16_t value = queueMsg.data[1] >> 16;
                     /* Read the data out */
-                    retStatus = Cy_USB_USBD_RecvEndp0Data(pAppCtxt->pUsbdCtxt, (uint8_t *)Ep0TestBuffer, length);
+                    retStatus = Cy_USB_USBD_RecvEndp0Data(pAppCtxt->pUsbdCtxt, (uint8_t *)Ep0XferBuffer, length);
                     if (retStatus == CY_USBD_STATUS_SUCCESS)
                     {
                         /* Wait until receive DMA transfer has been completed. */
@@ -373,11 +497,10 @@ void Cy_PA_AppTaskHandler(void *pTaskParam)
                         Cy_JTAGTransfer(value);
                     }
                 }
-
                 break;
 
             default:
-            break;
+                break;
         }
 
        
@@ -397,7 +520,6 @@ Cy_USB_VbusDebounceTimerCallback (TimerHandle_t xTimer)
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     cy_stc_usbd_app_msg_t xMsg;
 
-    DBG_APP_INFO("VbusDebounce_CB\r\n");
     if (pAppCtxt->vbusChangeIntr) {
         /* Notify the VCOM task that VBus debounce is complete. */
         xMsg.type = CY_USB_UVC_VBUS_CHANGE_DEBOUNCED;
@@ -412,7 +534,8 @@ Cy_USB_VbusDebounceTimerCallback (TimerHandle_t xTimer)
 
 /**
  * \name Cy_USB_AppInit
- * \brief This function Initializes application related data structures, register callback creates task for device function.
+ * \brief   This function Initializes application related data structures, register callback
+ *          creates task for device function.
  * \param pAppCtxt application layer context pointer.
  * \param pUsbdCtxt USBD layer Context pointer
  * \param pCpuDmacBase DMAC base address
@@ -443,7 +566,6 @@ void Cy_USB_AppInit(cy_stc_usb_app_ctxt_t *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUs
     pAppCtxt->pCpuDw1Base = pCpuDw1Base;
     pAppCtxt->pUsbdCtxt = pUsbdCtxt;
     pAppCtxt->hbChannelCreated = false;
-    pAppCtxt->paPendingRxBufCnt1 = 0;
 
     for (index = 0x00; index < CY_USB_MAX_ENDP_NUMBER; index++)
     {
@@ -467,7 +589,7 @@ void Cy_USB_AppInit(cy_stc_usb_app_ctxt_t *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUs
         pAppCtxt->usbMsgQueue = xQueueCreate(CY_USB_DEVICE_MSG_QUEUE_SIZE,
                 CY_USB_DEVICE_MSG_SIZE);
         if (pAppCtxt->usbMsgQueue == NULL) {
-            DBG_APP_ERR("QueuecreateFail\r\n");
+            DBG_APP_ERR("PA: Queue create failed\r\n");
             return;
         }
 
@@ -478,17 +600,17 @@ void Cy_USB_AppInit(cy_stc_usb_app_ctxt_t *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUs
 
         if (status != pdPASS)
         {
-            DBG_APP_ERR("TaskcreateFail\r\n");
+            DBG_APP_ERR("PA: Task create failed \r\n");
             return;
         }
 
         pAppCtxt->vbusDebounceTimer = xTimerCreate("VbusDebounceTimer", 200, pdFALSE,
                 (void *)pAppCtxt, Cy_USB_VbusDebounceTimerCallback);
         if (pAppCtxt->vbusDebounceTimer == NULL) {
-            DBG_APP_ERR("TimerCreateFail\r\n");
+            DBG_APP_ERR("USB: Timer create failed\r\n");
             return;
         }
-        DBG_APP_INFO("VBus debounce timer created\r\n");
+        DBG_APP_INFO("USB: VBus debounce timer created\r\n");
         pAppCtxt->firstInitDone = 0x01;
     }
 } /* end of function. */
@@ -534,16 +656,12 @@ static void Cy_USB_AppSetupEndpDmaParamsHs(cy_stc_usb_app_ctxt_t *pUsbApp, uint8
     cy_en_hbdma_mgr_status_t mgrStat;
     uint32_t endpNumber, dir;
     uint16_t maxPktSize;
-    cy_stc_app_endp_dma_set_t *pEndpDmaSet;
-    DW_Type *pDW;
-    bool stat;
 
     Cy_USBD_GetEndpNumMaxPktDir(pEndpDscr, &endpNumber, &maxPktSize, &dir);
     
     if(endpNumber == BULK_IN_ENDPOINT_1)
     {
-        pUsbApp->paInEpNum1    = (uint8_t)endpNumber;
-        pUsbApp->paPendingRxBufCnt1 = 0;
+        pUsbApp->paInEpNum    = (uint8_t)endpNumber;
         dmaConfig.size          = PA_RX_MAX_BUFFER_SIZE;      /* DMA Buffer Size in bytes */
         dmaConfig.count         = PA_RX_MAX_BUFFER_COUNT;     /* DMA Buffer Count */
         dmaConfig.bufferMode    = true;                         /* DMA buffer mode disabled */
@@ -562,8 +680,9 @@ static void Cy_USB_AppSetupEndpDmaParamsHs(cy_stc_usb_app_ctxt_t *pUsbApp, uint8
         dmaConfig.prodSck[0] = CY_HBDMA_LVDS_SOCKET_00;
         dmaConfig.prodSck[1] = (cy_hbdma_socket_id_t)0; /* Producer Socket ID: None */
 
-        dmaConfig.chType     = CY_HBDMA_TYPE_IP_TO_MEM;
-        dmaConfig.consSck[0] = (cy_hbdma_socket_id_t)0;
+        dmaConfig.chType        = CY_HBDMA_TYPE_IP_TO_IP;
+        dmaConfig.consSck[0]    = (cy_hbdma_socket_id_t)(CY_HBDMA_USBHS_IN_EP_00 + endpNumber);
+        dmaConfig.usbMaxPktSize = maxPktSize;
 
         mgrStat = Cy_HBDma_Channel_Create(pUsbApp->pUsbdCtxt->pHBDmaMgr, 
                                           &(pUsbApp->endpInDma[endpNumber].hbDmaChannel),
@@ -571,36 +690,20 @@ static void Cy_USB_AppSetupEndpDmaParamsHs(cy_stc_usb_app_ctxt_t *pUsbApp, uint8
 
         if (mgrStat != CY_HBDMA_MGR_SUCCESS)
         {
-            DBG_APP_ERR("BulkIn channel create failed 0x%x\r\n", mgrStat);
+            DBG_APP_ERR("PA: BulkIn channel create failed 0x%x\r\n", mgrStat);
             return;
         }
         else
         {
             /* Store the DMA channel pointer. */
-            pUsbApp->hbBulkInChannel[0] = &(pUsbApp->endpInDma[endpNumber].hbDmaChannel);
-            mgrStat = Cy_HBDma_Channel_Enable(pUsbApp->hbBulkInChannel[0], 0);
-            DBG_APP_INFO("InChnEnable status: %x\r\n", mgrStat);
+            pUsbApp->hbBulkInChannel = &(pUsbApp->endpInDma[endpNumber].hbDmaChannel);
+            mgrStat = Cy_HBDma_Channel_Enable(pUsbApp->hbBulkInChannel, 0);
+            DBG_APP_INFO("PA: Channel enable status: %x\r\n", mgrStat);
         }
     }
 
     /* Set flag to indicate DMA channels have been created. */
     pUsbApp->hbChannelCreated = true;
-
-    if (*(pEndpDscr + CY_USB_ENDP_DSCR_OFFSET_ADDRESS) & 0x80)
-    {
-        dir = CY_USB_ENDP_DIR_IN;
-        pEndpDmaSet = &(pUsbApp->endpInDma[endpNumber]);
-        pDW = pUsbApp->pCpuDw1Base;
-    }
-    else
-    {
-        dir = CY_USB_ENDP_DIR_OUT;
-        pEndpDmaSet = &(pUsbApp->endpOutDma[endpNumber]);
-        pDW = pUsbApp->pCpuDw0Base;
-    }
-
-    stat = Cy_USBHS_App_EnableEpDmaSet(pEndpDmaSet, pDW, endpNumber, endpNumber,(cy_en_usb_endp_dir_t)dir, maxPktSize);
-    DBG_APP_INFO("Enable EPDmaSet: endp=%x dir=%x stat=%x\r\n", endpNumber, dir, stat);
 
     return;
 } /* end of function  */
@@ -673,7 +776,7 @@ void Cy_USB_AppConfigureEndp(cy_stc_usb_usbd_ctxt_t *pUsbdCtxt, uint8_t *pEndpDs
     usbdRetCode = Cy_USB_USBD_EndpConfig(pUsbdCtxt, endpConfig);
 
     /* Print status of the endpoint configuration to help debug. */
-    DBG_APP_INFO("#ENDPCFG: %d, %d\r\n", endpNumber, usbdRetCode);
+    DBG_APP_INFO("USB: Ep Number %d, status %x\r\n", endpNumber, usbdRetCode);
     return;
 } /* end of function */
 
@@ -691,7 +794,7 @@ void Cy_USB_AppSetCfgCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
     cy_stc_usb_app_ctxt_t *pUsbApp;
     uint8_t *pActiveCfg, *pIntfDscr, *pEndpDscr;
     uint8_t index, numOfIntf, numOfEndp;
-    DBG_APP_INFO("AppSetCfgCbStart\r\n");
+    DBG_APP_INFO("USB: Set Configuration CB\r\n");
 
     pUsbApp = (cy_stc_usb_app_ctxt_t *)pAppCtxt;
     pUsbApp->devSpeed = Cy_USBD_GetDeviceSpeed(pUsbdCtxt);
@@ -721,14 +824,14 @@ void Cy_USB_AppSetCfgCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
         pIntfDscr = Cy_USBD_GetIntfDscr(pUsbdCtxt, index, 0x00);
         if (pIntfDscr == NULL)
         {
-            DBG_APP_INFO("pIntfDscrNull\r\n");
+            DBG_APP_INFO("USB: pIntfDscrNull\r\n");
             return;
         }
 
         numOfEndp = Cy_USBD_FindNumOfEndp(pIntfDscr);
         if (numOfEndp == 0x00)
         {
-            DBG_APP_INFO("numOfEndp 0\r\n");
+            DBG_APP_INFO("USB: numOfEndp 0\r\n");
             continue;
         }
 
@@ -743,11 +846,7 @@ void Cy_USB_AppSetCfgCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
         }
     }
 
-#if CY_CPU_CORTEX_M4
-    Cy_USB_AppInitDmaIntr(BULK_IN_ENDPOINT_1, CY_USB_ENDP_DIR_IN, Cy_PA_RxChannel1DataWire_ISR);
-#else
-    Cy_USB_AppInitDmaIntr(BULK_IN_ENDPOINT_1, CY_USB_ENDP_DIR_IN, Cy_PA_RxDataWireCombined_ISR);
-#endif
+    Cy_USB_AppInitDmaIntr(BULK_IN_ENDPOINT_1, CY_USB_ENDP_DIR_IN, Cy_PA_RxChannelDataWire_ISR);
 
     pUsbApp->prevDevState = CY_USB_DEVICE_STATE_CONFIGURED;
     pUsbApp->devState = CY_USB_DEVICE_STATE_CONFIGURED;
@@ -757,7 +856,6 @@ void Cy_USB_AppSetCfgCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
     Cy_LVDS_GpifThreadConfig(LVDSSS_LVDS, 0, 0, 0, 1, 0);
     Cy_LVDS_GpifThreadConfig(LVDSSS_LVDS, 1, 1, 0, 1, 0);
 
-    DBG_APP_INFO("AppSetCfgCbEnd Done\r\n");
     return;
 } /* end of function */
 
@@ -776,15 +874,15 @@ void Cy_USB_AppBusResetCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtx
 
     pUsbApp = (cy_stc_usb_app_ctxt_t *)pAppCtxt;
 
-    DBG_APP_INFO("AppBusResetCallback\r\n");
+    DBG_APP_INFO("USB: Bus Reset CB\r\n");
 
     /* Stop and destroy the high bandwidth DMA channel if present. To be done before AppInit is called. */
     if (pUsbApp->hbChannelCreated)
     {
         DBG_APP_TRACE("HBDMA destroy\r\n");
         pUsbApp->hbChannelCreated = false;
-        Cy_HBDma_Channel_Disable(pUsbApp->hbBulkInChannel[0]);
-        Cy_HBDma_Channel_Destroy(pUsbApp->hbBulkInChannel[0]);
+        Cy_HBDma_Channel_Disable(pUsbApp->hbBulkInChannel);
+        Cy_HBDma_Channel_Destroy(pUsbApp->hbBulkInChannel);
     }
 
     /*
@@ -813,7 +911,7 @@ void Cy_USB_AppBusResetDoneCallback(void *pAppCtxt,
 {
     cy_stc_usb_app_ctxt_t *pUsbApp;
 
-    DBG_APP_INFO("ppBusResetDoneCallback\r\n");
+    DBG_APP_INFO("USB: Bus Reset Done CB\r\n");
 
     pUsbApp = (cy_stc_usb_app_ctxt_t *)pAppCtxt;
     pUsbApp->devState = CY_USB_DEVICE_STATE_DEFAULT;
@@ -823,8 +921,8 @@ void Cy_USB_AppBusResetDoneCallback(void *pAppCtxt,
 
 /**
  * \name Cy_USB_AppBusSpeedCallback
- * \brief   Callback function will be invoked by USBD when speed is identified or
- *          speed change is detected
+ * \brief Callback function will be invoked by USBD when speed is identified or
+ * speed change is detected
  * \param pAppCtxt application layer context pointer.
  * \param pUsbdCtxt USBD context
  * \param pMsg USB Message
@@ -840,167 +938,6 @@ void Cy_USB_AppBusSpeedCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtx
     pUsbApp->devSpeed = Cy_USBD_GetDeviceSpeed(pUsbdCtxt);
     return;
 } /* end of function. */
-
-void Cy_JTAGTransfer(uint8_t count) {
-
-      uint8_t full = count >> 2;
-      uint8_t i;
-      wValueData_t B;
-      uint32_t intMask;
-      intMask = Cy_SysLib_EnterCriticalSection();
-
-      for (i = 0; i < full; i++)
-      {
-        /* Refernce code do not delete: 
-            B = EP0BUF[i]; */
-        /*
-        JTAG_TMS = B_0_b;
-        JTAG_TDI = B_1_b;
-        JTAG_TCK = 1;
-        B_0_b = JTAG_TDO;
-        JTAG_TCK = 0;
-        */
-        B.Value = Ep0TestBuffer[i];
-        (B.bits.b0) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
-
-        (B.bits.b1) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
-
-        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-        B.bits.b0  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
-        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-
-        /*
-        JTAG_TMS = B_2_b;
-        JTAG_TDI = B_3_b;
-        JTAG_TCK = 1;
-        B_1_b = JTAG_TDO;
-        JTAG_TCK = 0;
-        */
-        (B.bits.b2) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
-
-        (B.bits.b3) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
-
-        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-        B.bits.b1  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
-        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-
-        /*
-        JTAG_TMS = B_4_b;
-        JTAG_TDI = B_5_b;
-        JTAG_TCK = 1;
-        B_2_b = JTAG_TDO;
-        JTAG_TCK = 0;
-        */
-        (B.bits.b4) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
-
-        (B.bits.b5) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
-
-        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-        B.bits.b2  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
-        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-
-        /*
-        JTAG_TMS = B_6_b;
-        JTAG_TDI = B_7_b;
-        JTAG_TCK = 1;
-        B_3_b = JTAG_TDO;
-        JTAG_TCK = 0;
-        */
-        (B.bits.b6) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
-
-        (B.bits.b7) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
-                        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
-
-        Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-        B.bits.b3  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
-        Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-
-        Ep0TestBuffer[i] = (uint8_t) B.Value;
-      }
-    
-      if (count & 3)
-      {
-
-        /*
-        B = EP0BUF[full];
-        JTAG_TMS = B_0_b;
-        JTAG_TDI = B_1_b;
-        JTAG_TCK = 1;
-        B_0_b = JTAG_TDO;
-        B_1_b = 0;
-        JTAG_TCK = 0;
-        */
-            B.Value = Ep0TestBuffer[full];
-            (B.bits.b0) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
-                            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
-
-            (B.bits.b1) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
-                            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
-
-            Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-            B.bits.b0  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
-            B.bits.b1 = 0;
-            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-
-        if (count & 2)
-        {
-        /*
-          JTAG_TMS = B_2_b;
-          JTAG_TDI = B_3_b;
-          JTAG_TCK = 1;
-          B_1_b = JTAG_TDO;
-          B_2_b = 0;
-          JTAG_TCK = 0;
-          */
-            (B.bits.b2) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
-                            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
-
-            (B.bits.b3) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
-                            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
-
-            Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-            B.bits.b1  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
-            B.bits.b2 = 0;
-            Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-          if (count & 1)
-          {
-            /*
-            JTAG_TMS = B_4_b;
-            JTAG_TDI = B_5_b;
-            JTAG_TCK = 1;
-            B_2_b = JTAG_TDO;
-            JTAG_TCK = 0;
-            */
-                (B.bits.b4) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS):
-                                Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TMS);
-
-                (B.bits.b5) ?   Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI):
-                                Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDI);
-
-                Cy_LVDS_PhyGpioSet(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-                B.bits.b2  = (Cy_LVDS_PhyGpioRead(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TDO));
-                Cy_LVDS_PhyGpioClr(LVDSSS_LVDS, 0, USB_SNIFFER_JTAG_TCK);
-          }
-        }
-        else
-        {
-          //B_2_b = 0;
-            B.bits.b2 = 0;
-        }
-
-        //B_3_b = 0;
-        B.bits.b3 = 0;
-        Ep0TestBuffer[full] = (uint8_t) B.Value;
-      }
-    Cy_SysLib_ExitCriticalSection(intMask);
-}
 
 /**
  * \name Cy_USB_AppSetupCallback
@@ -1025,7 +962,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
     cy_en_usb_endp_dir_t epDir = CY_USB_ENDP_DIR_INVALID;
 
 
-    DBG_APP_INFO("AppSetupCallback\r\n");
+    DBG_APP_TRACE("USB: Setup CB\r\n");
 
     /* Fast enumeration is used. Only requests addressed to the interface, class,
      * vendor and unknown control requests are received by this function. */
@@ -1041,7 +978,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
 
     if (bType == CY_USB_CTRL_REQ_STD)
     {
-        DBG_APP_INFO("CY_USB_CTRL_REQ_STD\r\n");
+        DBG_APP_INFO("USB: Standard Request \r\n");
         if (bRequest == CY_USB_SC_SET_FEATURE)
         {
             if ((bTarget == CY_USB_CTRL_REQ_RECIPENT_INTF) && (wValue == 0))
@@ -1074,9 +1011,9 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
             if ((bTarget == CY_USB_CTRL_REQ_RECIPENT_ENDP) && (wValue == CY_USB_FEATURE_ENDP_HALT))
             {
                 epDir = ((wIndex & 0x80UL) ? (CY_USB_ENDP_DIR_IN) : (CY_USB_ENDP_DIR_OUT));
-                if(((wIndex & 0x7F) == pUsbApp->paInEpNum1))
+                if(((wIndex & 0x7F) == pUsbApp->paInEpNum))
                 {
-                    /*Stop stream from FPGA*/
+
                 }
                 Cy_USBD_SendAckSetupDataStatusStage(pUsbdCtxt);
                 isReqHandled = true;
@@ -1093,7 +1030,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
                 wLength = glOsString[0];
             }
 
-            DBG_APP_INFO("OSString\r\n");
+            DBG_APP_INFO("USB: OS String\r\n");
             retStatus = Cy_USB_USBD_SendEndp0Data(pUsbdCtxt, (uint8_t *)glOsString, wLength);
             if(retStatus == CY_USBD_STATUS_SUCCESS) {
                 isReqHandled = true;
@@ -1112,7 +1049,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
                     wLength = *((uint16_t *)glOsCompatibilityId);
                 }
 
-                DBG_APP_INFO("OSCompat\r\n");
+                DBG_APP_INFO("USB: OSCompat\r\n");
                 retStatus = Cy_USB_USBD_SendEndp0Data(pUsbdCtxt, (uint8_t *)glOsCompatibilityId, wLength);
                 if(retStatus == CY_USBD_STATUS_SUCCESS) {
                     isReqHandled = true;
@@ -1123,7 +1060,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
                     wLength = *((uint16_t *)glOsFeature);
                 }
 
-                DBG_APP_INFO("OSFeature\r\n");
+                DBG_APP_INFO("USB: OSFeature\r\n");
                 retStatus = Cy_USB_USBD_SendEndp0Data(pUsbdCtxt, (uint8_t *)glOsFeature, wLength);
                 if(retStatus == CY_USBD_STATUS_SUCCESS) {
                     isReqHandled = true;
@@ -1140,10 +1077,10 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
         (bTarget == CY_USB_CTRL_REQ_RECIPENT_DEVICE) && 
         (bRequest == CMD_CTRL)) {       
         
-        uint8_t Index = wValue & 0x0F;
-        switch(Index) {
+        uint8_t index = wValue & 0x0F;
+        switch(index) {
             case CAPTURE_CTRL_RESET:
-                DBG_APP_INFO("CAPTURE_CTRL_RESET\r\n");
+                DBG_APP_TRACE("CMD CTRL: Reset\r\n");
                 isReqHandled = true;
                 xMsg.type = CAPTURE_CTRL_RESET;
                 xMsg.data[0] = BULK_IN_ENDPOINT_1;              
@@ -1151,7 +1088,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
                 xQueueSendFromISR(pUsbApp->usbMsgQueue, &(xMsg), &(xHigherPriorityTaskWoken));
                 break;
             case CAPTURE_CTRL_ENABLE:
-                DBG_APP_INFO("CAPTURE_CTRL_ENABLE\r\n");
+                DBG_APP_TRACE("CMD CTRL: Enable\r\n");
                 isReqHandled = true;
                 xMsg.type = CAPTURE_CTRL_ENABLE;
                 xMsg.data[0] = BULK_IN_ENDPOINT_1;              
@@ -1159,7 +1096,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
                 xQueueSendFromISR(pUsbApp->usbMsgQueue, &(xMsg), &(xHigherPriorityTaskWoken));  
                 break;              
             case CAPTURE_CTRL_SPEED0:
-                DBG_APP_INFO("CAPTURE_CTRL_SPEED0\r\n");
+                DBG_APP_TRACE("CMD CTRL: Speed0\r\n");
                 isReqHandled = true;
                 xMsg.type = CAPTURE_CTRL_SPEED0;
                 xMsg.data[0] = BULK_IN_ENDPOINT_1;              
@@ -1167,7 +1104,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
                 xQueueSendFromISR(pUsbApp->usbMsgQueue, &(xMsg), &(xHigherPriorityTaskWoken));      
                 break;              
             case CAPTURE_CTRL_SPEED1:
-                DBG_APP_INFO("CAPTURE_CTRL_SPEED1\r\n");
+                DBG_APP_TRACE("CMD CTRL: Speed1\r\n");
                 isReqHandled = true;
                 xMsg.type = CAPTURE_CTRL_SPEED1;
                 xMsg.data[0] = BULK_IN_ENDPOINT_1;              
@@ -1175,7 +1112,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
                 xQueueSendFromISR(pUsbApp->usbMsgQueue, &(xMsg), &(xHigherPriorityTaskWoken));  
                 break;              
             case CAPTURE_CTRL_TEST:
-                DBG_APP_INFO("CAPTURE_CTRL_TEST\r\n");
+                DBG_APP_TRACE("CMD CTRL: Test\r\n");
                 isReqHandled = true;
                 xMsg.type = CAPTURE_CTRL_TEST;
                 xMsg.data[0] = BULK_IN_ENDPOINT_1;              
@@ -1193,10 +1130,10 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
     else if ((bType == CY_USB_CTRL_REQ_VENDOR) && 
         (bTarget == CY_USB_CTRL_REQ_RECIPENT_DEVICE) && 
         (bRequest == CMD_I2C_READ)) {       
-        DBG_APP_INFO("CMD_I2C_READ\r\n");
+        DBG_APP_TRACE("CMD Read \r\n");;
         
-        if (!Cy_I2C_MasterRead(SCB0, wValue, Ep0TestBuffer, wLength, true)) {
-            retStatus = Cy_USB_USBD_SendEndp0Data(pUsbdCtxt, Ep0TestBuffer, wLength);               
+        if (!Cy_I2C_MasterRead(SCB0, wValue, Ep0XferBuffer, wLength, true)) {
+            retStatus = Cy_USB_USBD_SendEndp0Data(pUsbdCtxt, (uint8_t *)Ep0XferBuffer, wLength);
             if (retStatus == CY_USBD_STATUS_SUCCESS) {              
                 isReqHandled = true;
             }
@@ -1210,10 +1147,9 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
         (bTarget == CY_USB_CTRL_REQ_RECIPENT_DEVICE) && 
         (bRequest == CMD_I2C_WRITE)) {      
         
-        DBG_APP_INFO("CMD_I2C_WRITE\r\n");      
-        retStatus = Cy_USB_USBD_RecvEndp0Data(pUsbdCtxt,(uint8_t *)Ep0TestBuffer, wLength);
+        retStatus = Cy_USB_USBD_RecvEndp0Data(pUsbdCtxt, (uint8_t *)Ep0XferBuffer, wLength);
         if (retStatus == CY_USBD_STATUS_SUCCESS) {
-            if (!Cy_I2C_MasterWrite(SCB0, wValue, Ep0TestBuffer, wLength, true)) {
+            if (!Cy_I2C_MasterWrite(SCB0, wValue, Ep0XferBuffer, wLength, true)) {
                 isReqHandled = true;
             }
             if (isReqHandled) {
@@ -1225,10 +1161,10 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
         (bTarget == CY_USB_CTRL_REQ_RECIPENT_DEVICE) && 
         (bRequest == CMD_JTAG_ENABLE)) {        
         if (wValue) {
-            DBG_APP_INFO("CMD_JTAG_ENABLE\r\n");            
+            DBG_APP_INFO("JTAG Enable\r\n");            
         }
         else {
-            DBG_APP_INFO("CMD_JTAG_DISABLE\r\n");
+            DBG_APP_INFO("JTAG Disable \r\n");
         }
         Cy_JTAGInit(wValue);    
         isReqHandled = true;
@@ -1240,7 +1176,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
         (bTarget == CY_USB_CTRL_REQ_RECIPENT_DEVICE) && 
         (bRequest == CMD_JTAG_REQUEST)) {       
         
-        DBG_APP_INFO("CMD_JTAG_REQUEST\r\n");
+        DBG_APP_TRACE("JTAG Request \r\n");
         isReqHandled = true;
         xMsg.type = CMD_JTAG_REQUEST;
         xMsg.data[0] = BULK_IN_ENDPOINT_1;
@@ -1255,11 +1191,10 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
         (bTarget == CY_USB_CTRL_REQ_RECIPENT_DEVICE) && 
         (bRequest == CMD_JTAG_RESPONSE)) {      
         
-        DBG_APP_INFO("CMD_JTAG_RESPONSE\r\n");
-        retStatus = Cy_USB_USBD_SendEndp0Data(pUsbdCtxt, Ep0TestBuffer, wLength);
+        DBG_APP_TRACE("JTAG Response\r\n");
+        retStatus = Cy_USB_USBD_SendEndp0Data(pUsbdCtxt, (uint8_t *)Ep0XferBuffer, wLength);
         if (retStatus == CY_USBD_STATUS_SUCCESS) {              
             isReqHandled = true;
-            DBG_APP_INFO("CMD_JTAG_RESPONSE true\r\n");
         }
         if (isReqHandled) {
             return;
@@ -1275,7 +1210,7 @@ void Cy_USB_AppSetupCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt,
 
 /**
  * \name Cy_USB_AppSuspendCallback
- * \brief  Callback function will be invoked by USBD when Suspend signal/message is detected
+ * \brief Callback function will be invoked by USBD when Suspend signal/message is detected
  * \param pAppCtxt application layer context pointer.
  * \param pUsbdCtxt USBD context
  * \param pMsg USB Message
@@ -1332,7 +1267,7 @@ void Cy_USB_AppSetIntfCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt
     cy_en_usb_endp_dir_t endpDirection;
     cy_stc_usb_app_ctxt_t *pUsbApp = (cy_stc_usb_app_ctxt_t *)pAppCtxt;
 
-    DBG_APP_INFO("AppSetIntfCallback Start\r\n");
+    DBG_APP_INFO("USB: Set Interface CB\r\n");
     pSetupReq = &(pUsbdCtxt->setupReq);
     /*
      * Get interface and alt setting info. If new setting same as previous
@@ -1345,23 +1280,23 @@ void Cy_USB_AppSetIntfCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt
 
     if (altSetting == pUsbApp->prevAltSetting)
     {
-        DBG_APP_INFO("SameAltSetting\r\n");
+        DBG_APP_INFO("USB: SameAltSetting\r\n");
         Cy_USB_USBD_EndpSetClearStall(pUsbdCtxt, 0x00, CY_USB_ENDP_DIR_IN, TRUE);
         return;
     }
 
     /* New altSetting is different than previous one so unconfigure previous. */
     pIntfDscr = Cy_USBD_GetIntfDscr(pUsbdCtxt, intfNum, pUsbApp->prevAltSetting);
-    DBG_APP_INFO("unconfigPrevAltSet\r\n");
+    DBG_APP_INFO("USB: Unconfig PrevAltSet\r\n");
     if (pIntfDscr == NULL)
     {
-        DBG_APP_INFO("pIntfDscrNull\r\n");
+        DBG_APP_INFO("USB: pIntfDscrNull\r\n");
         return;
     }
     numOfEndp = Cy_USBD_FindNumOfEndp(pIntfDscr);
     if (numOfEndp == 0x00)
     {
-        DBG_APP_INFO("SetIntf:prevNumEp 0\r\n");
+        DBG_APP_INFO("USB:prevNumEp 0\r\n");
     }
     else
     {
@@ -1392,14 +1327,14 @@ void Cy_USB_AppSetIntfCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt
     pIntfDscr = Cy_USBD_GetIntfDscr(pUsbdCtxt, intfNum, altSetting);
     if (pIntfDscr == NULL)
     {
-        DBG_APP_INFO("pIntfDscrNull\r\n");
+        DBG_APP_INFO("USB: pIntfDscrNull\r\n");
         return;
     }
 
     numOfEndp = Cy_USBD_FindNumOfEndp(pIntfDscr);
     if (numOfEndp == 0x00)
     {
-        DBG_APP_INFO("SetIntf:numEp 0\r\n");
+        DBG_APP_INFO("USB:numEp 0\r\n");
     }
     else
     {
@@ -1414,45 +1349,8 @@ void Cy_USB_AppSetIntfCallback(void *pAppCtxt, cy_stc_usb_usbd_ctxt_t *pUsbdCtxt
         }
     }
 
-    DBG_APP_INFO("AppSetIntfCallback done\r\n");
     return;
 } /* end of function. */
-
-/**
- * \name Cy_USB_AppQueueWrite
- * \brief Queue USBHS Write on the USB endpoint
- * \param pAppCtxt application layer context pointer.
- * \param endpNumber Endpoint number
- * \param pBuffer Data Buffer Pointer
- * \param dataSize DataSize to send on USB bus
- * \retval None
- */
-void Cy_USB_AppQueueWrite(cy_stc_usb_app_ctxt_t *pAppCtxt, uint8_t endpNumber,
-                          uint8_t *pBuffer, uint16_t dataSize)
-{
-    cy_stc_app_endp_dma_set_t *dmaset_p=NULL;
-
-    /* Null pointer checks. */
-    if ((pAppCtxt == NULL) || (pAppCtxt->pUsbdCtxt == NULL) ||
-            (pAppCtxt->pCpuDw1Base == NULL) || (pBuffer == NULL)) 
-    {
-        DBG_APP_ERR("QueueWrite Err0\r\n");
-        return;
-    }
-
-    /*
-     * Verify that the selected endpoint is valid and the dataSize
-     * is non-zero.
-     */
-    dmaset_p = &(pAppCtxt->endpInDma[endpNumber]);
-    if ((dmaset_p->valid == 0) || (dataSize == 0)) 
-    {
-        DBG_APP_ERR("QueueWrite Err1 %d %d\r\n",dmaset_p->valid,dataSize);
-        return;
-    }
-
-    Cy_USBHS_App_QueueWrite(dmaset_p, pBuffer, dataSize);
-} /* end of function */
 
 /**
  * \name Cy_USB_AppInitDmaIntr
@@ -1536,53 +1434,6 @@ void Cy_USB_AppClearDmaInterrupt(cy_stc_usb_app_ctxt_t *pAppCtxt,
 } /* end of function. */
 
 /**
- * \name Cy_PA_AppHandleRxCompletion
- * \brief Protocol Analyzer receive completion handler
- * \param pUsbApp application layer context pointer.
- * \param  index channel index number
- * \retval None
- */
-void Cy_PA_AppHandleRxCompletion (cy_stc_usb_app_ctxt_t *pUsbApp, uint8_t index)
-{
-    cy_stc_hbdma_buff_status_t buffStat;
-    cy_en_hbdma_mgr_status_t   dmaStat;
-    uint32_t intMask;
-
-    if( index == 1)
-    {
-        /* At least one buffer must be pending. */
-        if (pUsbApp->paPendingRxBufCnt1 == 0)
-        {
-            DBG_APP_ERR("PendingBufCnt=0 on SendComplete\r\n");
-            return;
-        }
-
-        /* The buffer which has been sent to the USB host can be discarded. */
-        dmaStat = Cy_HBDma_Channel_DiscardBuffer(pUsbApp->hbBulkInChannel[0], &buffStat);
-        if (dmaStat != CY_HBDMA_MGR_SUCCESS)
-        {
-            DBG_APP_ERR("DiscardBuffer failed with status=%x\r\n", dmaStat);
-            return;
-        }
-
-        /* If another DMA buffer has already been filled by the producer, go
-        * on and send it to the host controller.
-        */
-        intMask = Cy_SysLib_EnterCriticalSection();
-        pUsbApp->paPendingRxBufCnt1--;
-        if (pUsbApp->paPendingRxBufCnt1 > 0)
-        {
-            Cy_SysLib_ExitCriticalSection(intMask);
-            Cy_PA_AppHandleRxEvent(pUsbApp, pUsbApp->hbBulkInChannel[0], 0, index);
-        }
-        else
-        {
-            Cy_SysLib_ExitCriticalSection(intMask);
-        }
-    }
-}
-
-/**
  * \name Cy_CheckStatus
  * \brief Function that handles prints error log
  * \param function Pointer to function
@@ -1590,7 +1441,7 @@ void Cy_PA_AppHandleRxCompletion (cy_stc_usb_app_ctxt_t *pUsbApp, uint8_t index)
  * \param condition condition of failure
  * \param value error code
  * \param isBlocking blocking function
- * \return None
+ * \retval None
  */
 void Cy_CheckStatus(const char *function, uint32_t line, uint8_t condition, uint32_t value, uint8_t isBlocking)
 {
@@ -1619,7 +1470,7 @@ void Cy_CheckStatus(const char *function, uint32_t line, uint8_t condition, uint
  * \param value error code
  * \param isBlocking blocking function
  * \param failureHandler failure handler function
- * \return None
+ * \retval None
  */
 void Cy_CheckStatusHandleFailure(const char *function, uint32_t line, uint8_t condition, uint32_t value, uint8_t isBlocking, void (*failureHandler)(void))
 {

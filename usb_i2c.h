@@ -29,6 +29,10 @@
 
 #include "usb_app.h"
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 #define FPGASLAVE_ADDR                 (0x0D)        //FPGA i2c address (Do not change)
 
 /* I2C Related macro */
@@ -111,15 +115,8 @@ cy_en_scb_i2c_status_t Cy_I2C_MasterRead(CySCB_Type *base, uint16_t dev_addr, ui
 cy_en_scb_i2c_status_t Cy_I2C_MasterWrite(CySCB_Type *base, uint16_t dev_addr, const uint8_t *data,
                         uint16_t size, bool send_stop);
 
-/**
- * \name Cy_GPIO_WriteSetClear
- * \brief  Function to set or clear a bit
- * \param base  scb base
- * \param pinNum I2c PIN
- * \param value 
- * \retval none.
- */
-
-void Cy_GPIO_WriteSetClear(GPIO_PRT_Type* base, uint32_t pinNum, uint32_t value);
+#if defined(__cplusplus)
+}
+#endif
 
 #endif //End _CY_USB_I2C_H_ 

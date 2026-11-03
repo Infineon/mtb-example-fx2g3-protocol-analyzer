@@ -180,21 +180,6 @@ USB_DESC_ATTRIBUTES uint8_t CyFxUSBManufactureDscr[] =
 /* Standard product string descriptor */
 USB_DESC_ATTRIBUTES uint8_t CyFxUSBProductDscr[] =
 {
-#if 0
-    24,                             /* Descriptor Size */
-    CY_USB_DSCR_TYPE_STR,           /* Device descriptor type */
-    'U',0x00,
-    'S',0x00,
-    'B',0x00,
-    ' ',0x00,
-    'S',0x00,
-    'n',0x00,
-    'i',0x00,
-    'f',0x00,
-    'f',0x00,
-    'e',0x00,
-    'r',0x00
-#endif
     62,
     CY_USB_DSCR_TYPE_STR,
     'E',  0x00,
